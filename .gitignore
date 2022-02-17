@@ -9,3 +9,12 @@ app_frontend/*
 **/node_modules/*
 **/node_modules
 desktop.ini
+web_app/*
+cv/Neural Network Rectified Linear Unit (ReLU) vs Sigmoid.ipynb
+cv/test.csv
+cv/Training A Neural Network with Momentum.ipynb
+cv/__pycache__
+cv/plots
+cv/temp_for_testing
+cv/videos
+webapp
