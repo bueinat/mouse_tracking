@@ -1,15 +1,12 @@
-old_code/*
+old_code
 .env
-learning_react/*
-app_frontend/*
-.vscode/*
+learning_react
+app_frontend
 .vscode
-**/public/*
 **/public
-**/node_modules/*
 **/node_modules
 desktop.ini
-web_app/*
+web_app
 cv/Neural Network Rectified Linear Unit (ReLU) vs Sigmoid.ipynb
 cv/test.csv
 cv/Training A Neural Network with Momentum.ipynb
@@ -18,3 +15,6 @@ cv/plots
 cv/temp_for_testing
 cv/videos
 webapp
+__temp__.mp4
+cv/.ipynb_checkpoints
+cv/archive

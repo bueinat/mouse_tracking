@@ -14,6 +14,14 @@ import imutils
 from numpy_ext import rolling_apply
 import datetime
 
+import os
+import shutil
+import mongoengine as mnge
+from moviepy.video.io import VideoFileClip
+
+# %%
+VIDEO_PATH = 'videos/examples/Odor4.avi'
+
 # %% [markdown]
 # ## convert video to frames
 # 
@@ -24,6 +32,28 @@ import datetime
 # mainly taken from [here](https://www.pyimagesearch.com/2015/05/25/basic-motion-detection-and-tracking-with-python-and-opencv/).   
 # this code roughly finds the path in which the rat went. It goes over the frames and tries to detect from the edges where the rat is
 
+def video_to_frames(video_path, frames_path, video_name=None, include_video_name=False):
+    # create filename if doesn't exist and capture whole video
+    if video_name == None:
+        video_name = video_path.split('/')[-1].split('.')[0]
+    vidcap = cv2.VideoCapture(video_path)
+    os.makedirs(frames_path, exist_ok=True)
+    count = 0
+    
+    # make sure the video wasn't extracted already
+    success, image = vidcap.read()
+    frame_name = f"{frames_path}\\{video_name}_frame{count}.jpg" if include_video_name else f"{frames_path}\\frame{count}.jpg"
+    if os.path.exists(frame_name):
+        raise Exception('the video was already extracted')
+    
+    # write all frames to images
+    while success:
+        frame_name = f"{frames_path}\\{video_name}_frame{count}.jpg" if include_video_name else f"{frames_path}\\frame{count}.jpg"
+        s = cv2.imwrite(frame_name, image)
+        if not s:
+            raise Exception(f'frame {count} was not written')
+        success, image = vidcap.read()
+        count += 1
 # %%
 def get_arena_limits(gray):
     thresh = cv2.threshold(
@@ -101,7 +131,20 @@ def rat_path(video_path):
     return frames, rat_rects, alims
 
 # %%
-frames, rat_rects, alims = rat_path('videos/examples/Odor1.avi')
+os.chdir('cv')
+archive_path = f".\\archive"
+os.makedirs(archive_path, exist_ok=True)
+video_name = VIDEO_PATH.split('/')[-1].split('.')[0]
+data_path = f"{archive_path}\\{video_name}"
+try:
+    os.mkdir(data_path)
+except FileExistsError:
+    raise FileExistsError(f'a video named {video_name} already exists in archive. You can use it or give the new video a different name')
+shutil.copy2(VIDEO_PATH, data_path)
+frames_path = f".\\archive\\{video_name}\\frames"
+video_to_frames(VIDEO_PATH, frames_path)
+
+frames, rat_rects, alims = rat_path(VIDEO_PATH)
 
 # show track of rat in time
 raw_data = pandas.DataFrame(rat_rects).T
@@ -130,24 +173,13 @@ raw_data["adist"] = rolling_apply(aireal_dist, win_size, raw_data.x, raw_data.y)
 raw_data["rdist"] = raw_data.r.rolling(win_size).sum()
 
 
-# %%
-
-
 # %% [markdown]
 # ### Upload data to server
 
 # %%
-import mongoengine as mnge
-
-# %%
 cluster = "mongodb+srv://john:1234@cluster0.9txls.mongodb.net/real_test?retryWrites=true&w=majority"
-# mnge.connect(host=cluster, alias='core')
 mnge.register_connection(alias='core', host=cluster)
 
-# %%
-cluster = "mongodb+srv://john:1234@cluster0.9txls.mongodb.net/test?retryWrites=true&w=majority"
-# mnge.connect(host=cluster, alias='core')
-mnge.register_connection(alias='testing', host=cluster)
 
 # %%
 class Analysis(mnge.EmbeddedDocument):    
@@ -163,14 +195,17 @@ class Analysis(mnge.EmbeddedDocument):
     
     path = mnge.StringField(required=True)
     is_grooming = mnge.BooleanField(default=False)
+    is_rearing = mnge.BooleanField(default=False)
+    is_running = mnge.BooleanField(default=False)
     is_freezing = mnge.BooleanField(default=False)
-    # video_id = 
+    is_nose_casting = mnge.BooleanField(default=False)
+    video_id = mnge.ObjectIdField(required=True)
 
 # %%
 class Video(mnge.Document):
     registered_date = mnge.DateTimeField(default=datetime.datetime.now)
     name = mnge.StringField(required=True)
-    length = mnge.IntField(required=True)
+    length = mnge.IntField(required=True) # should be in seconds
     description = mnge.StringField(required=True)
     link_to_data = mnge.StringField(required=True)
     analysis = mnge.EmbeddedDocumentListField(Analysis)
@@ -181,19 +216,26 @@ class Video(mnge.Document):
     }
 
 # %%
-uploadabale_data = raw_data[['x', 'y', 'vx', 'vy', 'ax', 'ay']]
-uploadabale_data.loc[:, 'curviness'] = raw_data.adist / raw_data.rdist
-uploadabale_data.loc[:, 'path'] = 'path'
-uploadabale_data.loc[:, 'is_grooming'] = False
-uploadabale_data.loc[:, 'is_freezing'] = False
+video = Video()
+video.name = VIDEO_PATH.split('/')[-1]
+# video.length = VideoFileClip(VIDEO_PATH).duration
+video.length = 10.1
+video.description = "dummy video\nthis is just meant for testing."
+video.link_to_data = f"@WORKING_PATH\\{data_path[2:]}"
+video.save()
 
 # %%
-video = Video()
-video.name = 'Odor4'
-video.length = datetime.timedelta(minutes=2, seconds=26).seconds
-video.description = "dummy video\nthis is just meant for testing."
-video.link_to_data = 'this is not a real link'
-video.save()
+uploadabale_data = raw_data[['x', 'y', 'vx', 'vy', 'ax', 'ay']]
+uploadabale_data.loc[:, 'curviness'] = raw_data.adist / raw_data.rdist
+uploadabale_data['path'] = [f"@WORKING_PATH\\{frames_path[2:]}\\frame{i}.jpg"
+                            for i in uploadabale_data.index]
+uploadabale_data.loc[:, 'is_grooming'] = False
+uploadabale_data.loc[:, 'is_rearing'] = False
+uploadabale_data.loc[:, 'is_running'] = False
+uploadabale_data.loc[:, 'is_freezing'] = False
+uploadabale_data.loc[:, 'is_nose_casting'] = False
+
+uploadabale_data.loc[:, 'video_id'] = video.id
  
 
 # %%
@@ -210,7 +252,7 @@ for idx, row in uploadabale_data.iterrows():
     video.analysis.append(ana)
     try:
         video.save()
-        print(f"success! {idx}")
+        # print(f"success! {idx}")
     except Exception as e:
         print(f"something went wrong {idx}")
         print(e.message)
