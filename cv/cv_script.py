@@ -2,8 +2,11 @@
 # # Computer Vision
 #
 # 16/11/2021
-# read images from video and analyse them.
+# read images from video and analyze them.
 #
+
+# TODO:
+# * allow user to add input (like video path)
 
 # %%
 # %pylab inline
