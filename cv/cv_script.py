@@ -22,8 +22,14 @@ import shutil
 import mongoengine as mnge
 from moviepy.video.io import VideoFileClip
 
+import scipy.ndimage as ndimage
+import scipy.ndimage.filters as filters
+
 # %%
 VIDEO_PATH = 'videos/examples/Odor4.avi'
+FUNCTION_NAME = 'alternative_rat_path'
+MAXD = 10
+VIDEO_NAME = VIDEO_PATH.split('/')[-1].split('.')[0]
 
 # %% [markdown]
 # ## convert video to frames
@@ -142,6 +148,100 @@ def rat_path(video_path):
     return frames, rat_rects, alims
 
 
+def alternative_rat_path(video_path):
+    vs = cv2.VideoCapture(video_path)
+    prevFrame = None
+    frame_num = 0
+    nose_pos = {}
+    frames = []
+    maxvals = {}
+    edited_frames = []
+
+    # loop over the frames of the video
+    while True:
+        # grab the current frame and initialize the occupied / unoccupied text
+        frame = vs.read()[1]
+        frame_num += 1
+        # if the frame could not be grabbed, then we have reached the end of the video
+        if frame is None:
+            break
+        
+        k, sigma = 9, 10
+        frames.append(frame.copy())
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        frame = frame - np.mean(frame)
+        frame = cv2.GaussianBlur(frame, (k, k), sigma)
+        edited_frames.append(frame)
+        
+        # if the first frame is None, initialize it
+        if prevFrame is None:
+            prevFrame = frame
+            continue
+
+        diff = frame - prevFrame
+        tail = np.unravel_index(diff.argmax(), diff.shape)
+        head = np.unravel_index(diff.argmin(), diff.shape)
+#         try:
+#         if len(nose_pos) == 0 or dist(head, nose_pos[list(nose_pos.keys())[-1]]) < 100:
+        nose_pos[frame_num] = head
+        maxvals[frame_num] = diff.min()
+#         except:
+#             nose_pos[frame_num] = head
+        prevFrame = frame.copy()
+
+    # cleanup the camera and close any open windows
+    vs.release()
+    cv2.destroyAllWindows()
+
+    return frames, edited_frames, nose_pos, maxvals
+
+def find_closest_local_minima(diff_frames, last_point, neighborhood_size=5, threshold=1.5, maxval=-1,
+                              return_all=False):
+    data = - np.where(diff_frames < maxval, diff_frames, 0)
+    
+    data_max = filters.maximum_filter(data, neighborhood_size)
+    data_min = filters.minimum_filter(data, neighborhood_size)
+    maxima = (data == data_max)
+    diff = ((data_max - data_min) > threshold)
+    maxima[diff == 0] = 0
+    
+    labeled, num_objects = ndimage.label(maxima)
+    slices = ndimage.find_objects(labeled)
+    x, y = [], []
+    for dy, dx in slices:
+        x.append((dx.start + dx.stop - 1) / 2)
+        y.append((dy.start + dy.stop - 1) / 2)
+    
+    if len(x) == 0:
+        if return_all:
+            return x, y, np.NaN
+        return np.NaN, np.NaN
+    
+    imin = np.argmin((np.array(x) - last_point[1]) ** 2 + (np.array(y) - last_point[0]) ** 2)
+    if return_all:
+        return x, y, imin
+    return int(x[imin]), int(y[imin])
+
+def find_closest_local_minima_wrapper(diff_frames, last_point, neighborhood_size=5, init_threshold=1.5, maxval=-1,
+                              return_all=False):
+    thresholds = [init_threshold]
+    thr_step = 0.1
+    # threshold = init_threshold
+    x, y, imin = find_closest_local_minima(diff_frames, last_point, neighborhood_size, thresholds[-1], maxval, True)
+    while len(x) not in range(3, 11):
+        # print(thresholds[-1], end=", ")
+        if len(x) > 10:
+            new_threshold = thresholds[-1] + thr_step
+        elif len(x) < 3:
+            new_threshold = thresholds[-1] - thr_step
+        if new_threshold in thresholds:
+            thr_step /= 2
+        else:
+            thresholds.append(new_threshold)
+            x, y, imin = find_closest_local_minima(diff_frames, last_point, neighborhood_size,
+                                                   thresholds[-1], maxval, True)
+    return find_closest_local_minima(diff_frames, last_point, neighborhood_size, thresholds[-1], maxval, return_all)
+
 # %%
 os.chdir('cv')
 archive_path = f".\\archive"
@@ -157,10 +257,57 @@ shutil.copy2(VIDEO_PATH, data_path)
 frames_path = f".\\archive\\{video_name}\\frames"
 video_to_frames(VIDEO_PATH, frames_path)
 
-frames, rat_rects, alims = rat_path(VIDEO_PATH)
+# %%
+# extracting data from video
 
-# show track of rat in time
-raw_data = pandas.DataFrame(rat_rects).T
+if FUNCTION_NAME == 'rat_path':
+    frames, rat_rects, alims = rat_path(VIDEO_PATH)
+
+    # show track of rat in time
+    raw_data = pandas.DataFrame(rat_rects).T
+    
+elif FUNCTION_NAME == 'alternative_rat_path':
+    frames, eframes, nose_pos, max_vals = alternative_rat_path(VIDEO_PATH)
+    dfnose = pandas.DataFrame(nose_pos, index=['y', 'x']).T
+    # dfnose.y = frames[0].shape[0] - dfnose.y
+    dfnose = pandas.concat([dfnose, pandas.Series(max_vals)], axis=1)
+    dfnose = dfnose[['x', 'y', 0]].rename(columns={0: 'minvals'})
+    dfnose.index.name = 'timestep'
+    dfnose['d'] = np.sqrt(dfnose.x.diff() ** 2 + dfnose.y.diff() ** 2)
+
+    # cut the first frames
+    first_appearance = dfnose[dfnose.d < MAXD].index[0]
+    dfnose.loc[:first_appearance - 1, 'd'] = 100
+
+    # if the mouse is too far, set its position to the previous
+    dfnose.loc[dfnose.eval(f'd > {MAXD}'), ['x', 'y']] = np.NaN
+    dfnose = dfnose.fillna(method='ffill').fillna(method='bfill')
+    dfnose['d'] = np.sqrt(dfnose.x.diff() ** 2 + dfnose.y.diff() ** 2).fillna(0)
+    
+    dfnose['replace'] = False
+    dfnose.loc[dfnose.query(f'd > {MAXD}').index, 'replace'] = True
+    print((dfnose.query(f'd > {MAXD}').reset_index()['timestep'].diff().dropna() == 1).any())
+    
+    dfnose['new_x'] = dfnose.x
+    dfnose['new_y'] = dfnose.y
+
+    for idx in dfnose.query('replace').index:
+        if idx < dfnose.index[-1]:
+            new_point = find_closest_local_minima_wrapper(eframes[idx] - eframes[idx-1], nose_pos[idx-1],
+                                                        init_threshold=1)
+            dfnose.loc[idx, 'new_x'] = new_point[0]
+            dfnose.loc[idx, 'new_y'] = new_point[1]
+
+    dfnose['new_d'] = np.sqrt(dfnose.new_x.diff() ** 2 + dfnose.new_y.diff() ** 2).fillna(0)
+    
+    dfnose['real_x'] = dfnose.x
+    dfnose.loc[dfnose.d > dfnose.new_d, 'x'] = dfnose.new_x
+    dfnose['real_y'] = dfnose.y
+    dfnose.loc[dfnose.d > dfnose.new_d, 'y'] = dfnose.new_y
+    dfnose['real_d'] = np.sqrt(dfnose.real_x.diff() ** 2 + dfnose.real_y.diff() ** 2).fillna(0)
+    
+    raw_data = dfnose[['real_x', 'real_y']].rename(columns={'real_x': 'x', 'real_y': 'y'})
+    
 raw_data.index.name = 'timestep'
 raw_data['time'] = raw_data.index
 path = raw_data.set_index('x').y
